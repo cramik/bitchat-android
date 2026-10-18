@@ -136,6 +136,16 @@ class UnifiedMeshService(
         }
     }
 
+    // Private groups are BLE-mesh-only in this implementation, always forward to `bluetooth`
+    // regardless of the BLE/Wi-Fi selection logic used for messages above.
+    override fun listGroups(): List<com.bitchat.android.groups.BitchatGroup> = bluetooth.listGroups()
+    override fun getGroup(groupId: ByteArray): com.bitchat.android.groups.BitchatGroup? = bluetooth.getGroup(groupId)
+    override fun createGroup(name: String): com.bitchat.android.groups.BitchatGroup? = bluetooth.createGroup(name)
+    override fun inviteToGroup(groupId: ByteArray, peerID: String): String? = bluetooth.inviteToGroup(groupId, peerID)
+    override fun removeFromGroup(groupId: ByteArray, peerID: String): String? = bluetooth.removeFromGroup(groupId, peerID)
+    override fun leaveGroup(groupId: ByteArray) = bluetooth.leaveGroup(groupId)
+    override fun sendGroupMessage(groupId: ByteArray, content: String): String? = bluetooth.sendGroupMessage(groupId, content)
+
     override fun sendVerifyChallenge(peerID: String, noiseKeyHex: String, nonceA: ByteArray) {
         when {
             isBleReady(peerID) -> bluetooth.sendVerifyChallenge(peerID, noiseKeyHex, nonceA)

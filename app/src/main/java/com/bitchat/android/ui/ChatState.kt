@@ -61,6 +61,12 @@ class ChatState(
     
     private val _currentChannel = MutableStateFlow<String?>(null)
     val currentChannel: StateFlow<String?> = _currentChannel.asStateFlow()
+
+    // Private groups: the group typed lines currently go to (null = not "in" any
+    // group), mirroring bitchat-win's active_group_id typing-mode design so
+    // sending a group message doesn't need a "/group send" prefix every time.
+    private val _activeGroupId = MutableStateFlow<ByteArray?>(null)
+    val activeGroupId: StateFlow<ByteArray?> = _activeGroupId.asStateFlow()
     
     private val _channelMessages = MutableStateFlow<Map<String, List<BitchatMessage>>>(emptyMap())
     val channelMessages: StateFlow<Map<String, List<BitchatMessage>>> = _channelMessages.asStateFlow()
@@ -180,6 +186,7 @@ class ChatState(
     fun getJoinedChannelsValue() = _joinedChannels.value
     fun getPeerFavoritedUsValue() = _peerFavoritedUs.value
     fun getCurrentChannelValue() = _currentChannel.value
+    fun getActiveGroupIdValue() = _activeGroupId.value
     fun getChannelMessagesValue() = _channelMessages.value
     fun getUnreadChannelMessagesValue() = _unreadChannelMessages.value
     fun getPasswordProtectedChannelsValue() = _passwordProtectedChannels.value
@@ -239,7 +246,11 @@ class ChatState(
     fun setJoinedChannels(channels: Set<String>) {
         _joinedChannels.value = channels
     }
-    
+
+    fun setActiveGroupId(groupId: ByteArray?) {
+        _activeGroupId.value = groupId
+    }
+
     fun setCurrentChannel(channel: String?) {
         _currentChannel.value = channel
     }

@@ -150,7 +150,7 @@ private fun HeaderIconButton(
  */
 internal data class TorConnectionVisual(
     val tint: Color,
-    /** True while Tor is enabled but not fully bootstrapped — drives a pulse. */
+    /** True while Tor is enabled but not fully bootstrapped, drives a pulse. */
     val isProgress: Boolean,
 )
 
@@ -320,7 +320,7 @@ internal fun TorAwareHeaderIcon(
  *
  * Same visual language as the main header's Tor-aware globe: tint cross-fades between states,
  * and a soft radial glow pulse while the handshake is in flight. The glyph itself is the open
- * lock until a session is established (or fails), then the closed lock — both share the same
+ * lock until a session is established (or fails), then the closed lock, both share the same
  * baseline so a [Crossfade] reads as the shackle settling shut rather than an icon swap.
  */
 @Composable
@@ -348,7 +348,7 @@ fun NoiseSessionIcon(
             stringResource(R.string.cd_handshake_failed)
         )
         else -> Triple(
-            // Not yet started — quiet grey open lock.
+            // Not yet started, quiet grey open lock.
             colorScheme.onSurfaceVariant,
             false,
             stringResource(R.string.cd_ready_for_handshake)
@@ -405,7 +405,7 @@ internal fun conversationTransportIcon(
 }
 
 /**
- * The shared chrome for a conversation header — private chats and channels alike.
+ * The shared chrome for a conversation header, private chats and channels alike.
  *
  * Deliberately built from the same tokens as [MainHeader] rather than from `TopAppBar`: identical
  * height, identical 12/8.dp edge insets, the leading glyph in a [HeaderTapTarget]-sized slot so it
@@ -652,7 +652,8 @@ fun ChatHeaderContent(
     onTripleClick: () -> Unit,
     onShowAppInfo: () -> Unit,
     onLocationChannelsClick: () -> Unit,
-    onLocationNotesClick: () -> Unit
+    onLocationNotesClick: () -> Unit,
+    onGroupsClick: () -> Unit
 ) {
     val colorScheme = MaterialTheme.colorScheme
 
@@ -676,6 +677,7 @@ fun ChatHeaderContent(
                 onSidebarClick = onSidebarClick,
                 onLocationChannelsClick = onLocationChannelsClick,
                 onLocationNotesClick = onLocationNotesClick,
+                onGroupsClick = onGroupsClick,
                 viewModel = viewModel
             )
         }
@@ -716,6 +718,7 @@ private fun MainHeader(
     onSidebarClick: () -> Unit,
     onLocationChannelsClick: () -> Unit,
     onLocationNotesClick: () -> Unit,
+    onGroupsClick: () -> Unit,
     viewModel: ChatViewModel
 ) {
     val colorScheme = MaterialTheme.colorScheme
@@ -804,6 +807,12 @@ private fun MainHeader(
                         viewModel = viewModel,
                         onClick = onLocationChannelsClick,
                         showLabel = crowdingMode != HeaderCrowdingMode.IconOnlyLocationChannel
+                    )
+
+                    GroupsHeaderButton(
+                        viewModel = viewModel,
+                        onClick = onGroupsClick,
+                        showIdleLabel = crowdingMode == HeaderCrowdingMode.Full
                     )
                 }
 
@@ -894,6 +903,74 @@ private fun LocationChannelsButton(
                 fontSize = HeaderTextSize,
                 fontWeight = FontWeight.Medium,
                 color = channelColor,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.widthIn(max = 88.dp)
+            )
+        }
+    }
+}
+
+/**
+ * Header entry point for [GroupsSheet], creator-managed E2EE private groups (fork-only,
+ * see GroupProtocol.kt). Mirrors [LocationChannelsButton]'s dual behavior: a persistent
+ * `[GroupName]` badge when a group is the active typing destination (state.activeGroupId,
+ * set by GroupsSheet's row tap or the equivalent `/group <name>` command), otherwise a plain
+ * icon (with an optional "Groups" label when the header has room) that opens the picker.
+ *
+ * Groups have no dedicated glyph in the extracted Figma icon set, so this reuses the same
+ * people icon [PeerCounter] shows for the connected-peer count, the `[bracket]` text is what
+ * distinguishes "this is a group" from "these are online peers", exactly as `#channel` vs a
+ * bare mesh label does for [LocationChannelsButton].
+ */
+@Composable
+private fun GroupsHeaderButton(
+    viewModel: ChatViewModel,
+    onClick: () -> Unit,
+    showIdleLabel: Boolean
+) {
+    val colorScheme = MaterialTheme.colorScheme
+    val activeGroupId by viewModel.activeGroupId.collectAsStateWithLifecycle()
+    val activeGroup = activeGroupId?.let { viewModel.getGroup(it) }
+
+    val isActive = activeGroup != null
+    val showLabel = isActive || showIdleLabel
+    val badgeText = activeGroup?.let { "[${it.name}]" } ?: stringResource(R.string.groups_label)
+    val groupColor = if (isActive) colorScheme.primary else colorScheme.onSurfaceVariant
+    val actionDescription = stringResource(R.string.cd_open_groups)
+    val contentDescription = locationChannelContentDescription(
+        actionDescription = actionDescription,
+        channelLabel = badgeText,
+        showLabel = showLabel
+    )
+
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = if (showLabel) Arrangement.spacedBy(6.dp) else Arrangement.Center,
+        modifier = Modifier
+            .clip(HeaderClusterShape)
+            .pressScaleClickable(
+                onClick = onClick,
+                onClickLabel = actionDescription
+            )
+            .height(HeaderTapTarget)
+            .widthIn(min = HeaderTapTarget)
+            .padding(end = if (showLabel) 6.dp else 0.dp)
+    ) {
+        Icon(
+            painter = painterResource(R.drawable.ic_spec_people),
+            contentDescription = contentDescription,
+            modifier = Modifier.size(HeaderIconSize),
+            tint = groupColor
+        )
+
+        if (showLabel) {
+            Text(
+                text = badgeText,
+                style = MaterialTheme.typography.bodyMedium,
+                fontSize = HeaderTextSize,
+                fontWeight = FontWeight.Medium,
+                color = groupColor,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.widthIn(max = 88.dp)

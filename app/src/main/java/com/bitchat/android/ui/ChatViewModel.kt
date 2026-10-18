@@ -380,6 +380,7 @@ class ChatViewModel(
         )
     val joinedChannels: StateFlow<Set<String>> = state.joinedChannels
     val currentChannel: StateFlow<String?> = state.currentChannel
+    val activeGroupId: StateFlow<ByteArray?> = state.activeGroupId
     val channelMessages: StateFlow<Map<String, List<BitchatMessage>>> = state.channelMessages
     val unreadChannelMessages: StateFlow<Map<String, Int>> = state.unreadChannelMessages
     val passwordProtectedChannels: StateFlow<Set<String>> = state.passwordProtectedChannels
@@ -1027,9 +1028,41 @@ class ChatViewModel(
         } else {
             // Check if we're in a location channel
             val selectedLocationChannel = state.selectedLocationChannel.value
+            val activeGroupId = state.getActiveGroupIdValue()
             if (selectedLocationChannel is com.bitchat.android.geohash.ChannelID.Location) {
                 // Send to geohash channel via Nostr ephemeral event
                 geohashViewModel.sendGeohashMessage(content, selectedLocationChannel.channel, mesh.myPeerID, state.getNicknameValue())
+            } else if (activeGroupId != null) {
+                // Send to whichever private group is currently the active typing destination
+                // (set by /group create or /group <name>, see CommandProcessor.handleGroupCommand).
+                val group = mesh.getGroup(activeGroupId)
+                val reason = mesh.sendGroupMessage(activeGroupId, content)
+                if (reason != null) {
+                    messageManager.addMessage(
+                        BitchatMessage(sender = "system", content = reason, timestamp = Date(), isRelay = false)
+                    )
+                } else if (group != null) {
+                    // sendGroupMessage has no local-echo of its own, without this, the sender
+                    // never sees their own message (unlike bitchat-win, where typing it into the
+                    // terminal already shows it), making a successful send look like it silently
+                    // failed. Bucketed by group.peerIdHex to land in the same conversation thread
+                    // the receive side uses (onGroupMessageReceived in BluetoothMeshService.kt
+                    // sets senderPeerID = groupPeerId directly, with no alias canonicalization;
+                    // addPrivateMessage's own canonicalConversationId() call is a no-op passthrough
+                    // for this "group_..." shape, so both sides land on the same key).
+                    messageManager.addPrivateMessage(
+                        group.peerIdHex,
+                        BitchatMessage(
+                            sender = state.getNicknameValue() ?: mesh.myPeerID,
+                            content = content,
+                            timestamp = Date(),
+                            isRelay = false,
+                            isPrivate = true,
+                            recipientNickname = group.name,
+                            senderPeerID = mesh.myPeerID
+                        )
+                    )
+                }
             } else {
                 // Send public/channel message via mesh
                 val message = BitchatMessage(
@@ -1077,7 +1110,63 @@ class ChatViewModel(
     fun getPeerIDForNickname(nickname: String): String? {
         return mesh.getPeerNicknames().entries.find { it.value == nickname }?.key
     }
-    
+
+    // MARK: - Groups (creator-managed E2EE private groups)
+    //
+    // Compose-facing wrappers around the same MeshService group API that
+    // CommandProcessor.handleGroupCommand drives from `/group ...` text
+    // commands, see GroupsSheet.kt. Kept here (rather than having the sheet
+    // touch `meshService`/`mesh` directly) so the UI and the command surface
+    // always go through the exact same entry points.
+
+    fun listGroups(): List<com.bitchat.android.groups.BitchatGroup> = mesh.listGroups()
+
+    fun getGroup(groupId: ByteArray): com.bitchat.android.groups.BitchatGroup? = mesh.getGroup(groupId)
+
+    /** Mirrors `/group create <name>`: creates the group and immediately makes it the
+     * active typing destination. Returns null on failure (e.g. name blank at the
+     * transport layer, or too many groups). */
+    fun createGroupAndActivate(name: String): com.bitchat.android.groups.BitchatGroup? {
+        val group = mesh.createGroup(name) ?: return null
+        state.setActiveGroupId(group.groupId)
+        return group
+    }
+
+    /** Mirrors bare `/group <name>`: makes an existing group the active typing destination. */
+    fun setActiveGroup(groupId: ByteArray) {
+        state.setActiveGroupId(groupId)
+    }
+
+    /** Mirrors `/group off`: stop typing into the active group without leaving it. */
+    fun stopTypingIntoGroup() {
+        state.setActiveGroupId(null)
+    }
+
+    /** Mirrors `/group leave`: actually leave the group, clearing it as the active
+     * destination if it was one. */
+    fun leaveGroupById(groupId: ByteArray) {
+        mesh.leaveGroup(groupId)
+        if (state.getActiveGroupIdValue()?.contentEquals(groupId) == true) {
+            state.setActiveGroupId(null)
+        }
+    }
+
+    /** Mirrors `/group invite <nickname>` against a specific group (rather than
+     * whichever one is currently active), the sheet can invite into a group
+     * without first having to make it the active typing destination. Returns
+     * null on success, else a user-facing failure reason. */
+    fun inviteToGroup(groupId: ByteArray, nickname: String): String? {
+        val peerID = getPeerIDForNickname(nickname) ?: return "user '$nickname' not found"
+        return mesh.inviteToGroup(groupId, peerID)
+    }
+
+    /** Mirrors `/group remove <nickname>` against a specific group. Returns null on
+     * success, else a user-facing failure reason. */
+    fun removeFromGroup(groupId: ByteArray, nickname: String): String? {
+        val peerID = getPeerIDForNickname(nickname) ?: return "user '$nickname' not found"
+        return mesh.removeFromGroup(groupId, peerID)
+    }
+
     fun toggleFavorite(peerID: String) {
         Log.d("ChatViewModel", "toggleFavorite called for peerID: $peerID")
         privateChatManager.toggleFavorite(peerID)

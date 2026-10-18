@@ -29,6 +29,31 @@ This is the Android implementation of bitchat, fully protocol-compatible with th
 
 This project is released into the public domain. See the [LICENSE](LICENSE.md) file for details.
 
+## Fork notes
+
+Personal fork of `permissionlesstech/bitchat-android`, adding features ported
+from the iOS app plus a couple of fork-only extensions.
+
+### Private groups (fork-only)
+
+Ported from bitchat-reference's `GroupProtocol.swift`/`GroupStore.swift` (iOS
+has this; stock bitchat-android does not). See
+`app/src/main/java/com/bitchat/android/groups/`. No dedicated UI yet, managed
+via `/group create|list|off|leave|invite|remove|<name>` in the chat input.
+`/group create <name>` or `/group <name>` makes that group the active send
+destination, so plain typed messages go there directly.
+
+### Channel wire-format fix
+
+Upstream's channel chat feature (`ChannelManager.kt`, `/join`) builds its
+outgoing packet from the raw message text and silently drops the `channel`
+field, so a channel-tagged message is indistinguishable on the wire from a
+public message. iOS has no binary channel field either, so this fork encodes
+the channel as a plain text prefix instead (`ChannelTextPrefix.kt`):
+`"#general: hello"` is what goes out on the wire. A message that happens to
+start with `"#word: "` can be misread as a channel tag by receivers using
+this convention; see `ChannelTextPrefixTest.kt` for the exact behavior.
+
 ## Features
 
 - **Dual Transport Architecture**: Bluetooth LE mesh for offline messaging, Nostr relays for internet-based messaging

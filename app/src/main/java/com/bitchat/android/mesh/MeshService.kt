@@ -60,4 +60,13 @@ interface MeshService {
 
     fun clearAllInternalData()
     fun clearAllEncryptionData()
+
+    // Creator-managed E2EE private groups (BLE-mesh only; other transports no-op).
+    fun listGroups(): List<com.bitchat.android.groups.BitchatGroup> = emptyList()
+    fun getGroup(groupId: ByteArray): com.bitchat.android.groups.BitchatGroup? = null
+    fun createGroup(name: String): com.bitchat.android.groups.BitchatGroup? = null
+    fun inviteToGroup(groupId: ByteArray, peerID: String): String? = "groups are not supported on this transport"
+    fun removeFromGroup(groupId: ByteArray, peerID: String): String? = "groups are not supported on this transport"
+    fun leaveGroup(groupId: ByteArray) {}
+    fun sendGroupMessage(groupId: ByteArray, content: String): String? = "groups are not supported on this transport"
 }

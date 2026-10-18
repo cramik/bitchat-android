@@ -112,6 +112,60 @@ class BluetoothMeshService(private val context: Context) : TransportBridgeServic
     private val messageHandler = MessageHandler(myPeerID, context.applicationContext)
     internal val connectionManager = BluetoothConnectionManager(context, myPeerID, fragmentManager) // Made internal for access
     private val packetProcessor = PacketProcessor(myPeerID)
+    private val groupManager = com.bitchat.android.groups.GroupManager(java.io.File(context.filesDir, "groups.json"))
+    private val groupCoordinator = com.bitchat.android.groups.GroupCoordinator(groupManager, object : com.bitchat.android.groups.GroupCoordinatorDelegate {
+        override fun myPeerID(): String = this@BluetoothMeshService.myPeerID
+        override fun myNickname(): String =
+            try { com.bitchat.android.services.NicknameProvider.getNickname(context, myPeerID) } catch (_: Exception) { myPeerID }
+        override fun myFingerprint(): String = encryptionService.getIdentityFingerprint()
+        override fun mySigningPublicKey(): ByteArray =
+            requireNotNull(encryptionService.getSigningPublicKey()) { "signing key not initialized" }
+        override fun signWithIdentityKey(data: ByteArray): ByteArray? = encryptionService.signData(data)
+
+        override fun getPeerNickname(peerID: String): String? = peerManager.getPeerNickname(peerID)
+        override fun getPeerFingerprint(peerID: String): String? = peerManager.getFingerprintForPeer(peerID)
+        override fun getPeerSigningPublicKey(peerID: String): ByteArray? = peerManager.getPeerInfo(peerID)?.signingPublicKey
+        override fun getPeerIDForFingerprint(fingerprint: String): String? = peerManager.getPeerIDForFingerprint(fingerprint)
+        override fun hasNoiseSession(peerID: String): Boolean = encryptionService.hasEstablishedSession(peerID)
+        override fun encryptForPeer(data: ByteArray, peerID: String): ByteArray? = securityManager.encryptForPeer(data, peerID)
+
+        override fun sendPrivatePacket(packet: BitchatPacket) {
+            broadcastRoutedPacket(RoutedPacket(signPacketBeforeBroadcast(packet)))
+        }
+
+        override fun sendUnsignedBroadcastPacket(packet: BitchatPacket) {
+            // Deliberately skips signPacketBeforeBroadcast, see GroupCoordinator.sendGroupMessage.
+            broadcastRoutedPacket(RoutedPacket(packet))
+        }
+
+        override fun onGroupMessageReceived(groupPeerId: String, groupName: String, senderNickname: String, content: String) {
+            messageHandler.delegate?.onMessageReceived(
+                BitchatMessage(
+                    sender = senderNickname,
+                    content = content,
+                    timestamp = Date(),
+                    isRelay = false,
+                    isPrivate = true,
+                    recipientNickname = groupName,
+                    senderPeerID = groupPeerId
+                )
+            )
+        }
+
+        override fun onGroupNotice(groupPeerId: String, groupName: String, notice: String) {
+            messageHandler.delegate?.onMessageReceived(
+                BitchatMessage(
+                    sender = "system",
+                    content = notice,
+                    timestamp = Date(),
+                    isRelay = false,
+                    isPrivate = true,
+                    recipientNickname = groupName,
+                    senderPeerID = groupPeerId
+                )
+            )
+        }
+    })
     private data class VoiceFrameRequest(val recipientPeerID: String?, val payload: ByteArray)
     private val voiceFrameQueue = Channel<VoiceFrameRequest>(capacity = 128)
     private lateinit var gossipSyncManager: GossipSyncManager
@@ -542,6 +596,10 @@ class BluetoothMeshService(private val context: Context) : TransportBridgeServic
             override fun onVerifyResponseReceived(peerID: String, payload: ByteArray, timestampMs: Long) {
                 delegate?.didReceiveVerifyResponse(peerID, payload, timestampMs)
             }
+
+            override fun onGroupStateReceived(peerID: String, payload: ByteArray) {
+                groupCoordinator.handleIncomingGroupState(payload, peerID)
+            }
         }
         
         // PacketProcessor delegates
@@ -609,6 +667,21 @@ class BluetoothMeshService(private val context: Context) : TransportBridgeServic
                     val pkt = routed.packet
                     val isBroadcast = (pkt.recipientID == null || pkt.recipientID.contentEquals(SpecialRecipients.BROADCAST))
                     if (isBroadcast && pkt.type == MessageType.MESSAGE.value) {
+                        gossipSyncManager.onPublicPacketSeen(pkt)
+                    }
+                } catch (_: Exception) { }
+            }
+
+            override fun handleGroupMessage(routed: RoutedPacket) {
+                groupCoordinator.handleIncomingGroupMessage(routed.packet)
+                // Track for gossip sync same as MESSAGE, so a store-and-forward copy
+                // delivered long after the sender's announce expired still verifies;
+                // the inner Ed25519 signature (not the unsigned outer packet) carries
+                // authenticity indefinitely. See GroupProtocol.kt's file header.
+                try {
+                    val pkt = routed.packet
+                    val isBroadcast = (pkt.recipientID == null || pkt.recipientID.contentEquals(SpecialRecipients.BROADCAST))
+                    if (isBroadcast && pkt.type == MessageType.GROUP_MESSAGE.value) {
                         gossipSyncManager.onPublicPacketSeen(pkt)
                     }
                 } catch (_: Exception) { }
@@ -857,15 +930,23 @@ class BluetoothMeshService(private val context: Context) : TransportBridgeServic
      */
     fun sendMessage(content: String, mentions: List<String> = emptyList(), channel: String? = null) {
         if (content.isEmpty()) return
-        
+
         serviceScope.launch {
+            // Verified against the real bitchat-reference Swift source (BLEService.swift's
+            // sendMessage, public-broadcast branch): the actual wire payload for a public
+            // MessageType.MESSAGE packet is `Data(content.utf8)`, plain raw text, nothing
+            // else. A binary channel field (as this fork briefly tried) makes real bitchat
+            // phones see garbled bytes instead of the message. ChannelTextPrefix instead
+            // encodes `channel` as a plain, human-readable "#channel: " text prefix, see
+            // its doc comment and the README for the full writeup and tradeoffs.
+            val wireContent = ChannelTextPrefix.encode(content, channel)
             val packet = BitchatPacket(
                 version = 1u,
                 type = MessageType.MESSAGE.value,
                 senderID = hexStringToByteArray(myPeerID),
                 recipientID = SpecialRecipients.BROADCAST,
                 timestamp = System.currentTimeMillis().toULong(),
-                payload = content.toByteArray(Charsets.UTF_8),
+                payload = wireContent.toByteArray(Charsets.UTF_8),
                 signature = null,
                 ttl = MAX_TTL
             )
@@ -1112,7 +1193,33 @@ class BluetoothMeshService(private val context: Context) : TransportBridgeServic
             }
         }
     }
-    
+
+    // MARK: - Private groups (creator-managed E2EE, see the `groups` package)
+    // Note: BluetoothMeshService doesn't implement the MeshService interface directly
+    // (it implements TransportBridgeService.TransportLayer), these are plain public
+    // methods that UnifiedMeshService.kt forwards to, matching how it's the sole holder
+    // of a concrete `bluetooth: BluetoothMeshService` reference.
+
+    fun listGroups(): List<com.bitchat.android.groups.BitchatGroup> = groupCoordinator.listGroups()
+
+    fun getGroup(groupId: ByteArray): com.bitchat.android.groups.BitchatGroup? = groupCoordinator.group(groupId)
+
+    fun createGroup(name: String): com.bitchat.android.groups.BitchatGroup? = groupCoordinator.createGroup(name)
+
+    /** Returns null on success, or a user-facing reason string on failure. */
+    fun inviteToGroup(groupId: ByteArray, peerID: String): String? = groupCoordinator.inviteToGroup(groupId, peerID)
+
+    /** Returns null on success, or a user-facing reason string on failure. */
+    fun removeFromGroup(groupId: ByteArray, peerID: String): String? = groupCoordinator.removeFromGroup(groupId, peerID)
+
+    fun leaveGroup(groupId: ByteArray) = groupCoordinator.leaveGroup(groupId)
+
+    /** Returns null on success, or a user-facing reason string on failure. */
+    fun sendGroupMessage(groupId: ByteArray, content: String): String? {
+        if (content.isEmpty()) return "message is empty"
+        return groupCoordinator.sendGroupMessage(groupId, content)
+    }
+
     /**
      * Send read receipt for a received private message - NEW NoisePayloadType implementation
      * Uses same encryption approach as iOS SimplifiedBluetoothService

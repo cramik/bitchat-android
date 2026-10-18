@@ -199,6 +199,12 @@ class MessageHandler(private val myPeerID: String, private val appContext: andro
                 com.bitchat.android.model.NoisePayloadType.VERIFY_RESPONSE -> {
                     delegate?.onVerifyResponseReceived(peerID, noisePayload.data, packet.timestamp.toLong())
                 }
+                com.bitchat.android.model.NoisePayloadType.GROUP_INVITE,
+                com.bitchat.android.model.NoisePayloadType.GROUP_KEY_UPDATE -> {
+                    // Same wire form (GroupStatePayload) for both, creator-signed
+                    // roster/key state, sent over this already-established Noise session.
+                    delegate?.onGroupStateReceived(peerID, noisePayload.data)
+                }
             }
             
         } catch (e: Exception) {
@@ -484,11 +490,19 @@ class MessageHandler(private val myPeerID: String, private val appContext: andro
                 Log.w(TAG, "FILE_TRANSFER decode failed (broadcast) from ${peerID.take(8)}")
             }
 
-            // Fallback: plain text
+            // Verified against bitchat-reference: real public MESSAGE payloads are plain
+            // UTF-8 text, never BitchatMessage.fromBinaryPayload()'s TLV format (that's
+            // test-fixture-only in the real source), decoding real phones' plain text
+            // through that TLV parser risks misinterpreting ordinary message bytes as
+            // bogus flags/lengths. ChannelTextPrefix.decode() only ever strips a plain
+            // "#channel: " text prefix that's still fully readable either way, a real
+            // phone (or any peer not using this convention) just sees it as ordinary text.
+            val (channel, content) = ChannelTextPrefix.decode(String(packet.payload, Charsets.UTF_8))
             val message = BitchatMessage(
                 id = PacketIdUtil.computeIdHex(packet).uppercase(),
                 sender = delegate?.getPeerNickname(peerID) ?: "unknown",
-                content = String(packet.payload, Charsets.UTF_8),
+                content = content,
+                channel = channel,
                 senderPeerID = peerID,
                 timestamp = Date(packet.timestamp.toLong())
             )
@@ -640,9 +654,9 @@ class MessageHandler(private val myPeerID: String, private val appContext: andro
                 val rel = com.bitchat.android.favorites.FavoritesPersistenceService.shared.getFavoriteStatus(noiseKey)
                 val guidance = if (control.isFavorite) {
                     if (rel?.isFavorite == true) {
-                        " — mutual! You can continue DMs via Nostr when out of mesh."
+                        ", mutual! You can continue DMs via Nostr when out of mesh."
                     } else {
-                        " — favorite back to continue DMs later."
+                        ", favorite back to continue DMs later."
                     }
                 } else {
                     ". DMs over Nostr will pause unless you both favorite again."
@@ -738,4 +752,5 @@ interface MessageHandlerDelegate {
     fun onReadReceiptReceived(messageID: String, peerID: String)
     fun onVerifyChallengeReceived(peerID: String, payload: ByteArray, timestampMs: Long)
     fun onVerifyResponseReceived(peerID: String, payload: ByteArray, timestampMs: Long)
+    fun onGroupStateReceived(peerID: String, payload: ByteArray) {}
 }

@@ -90,6 +90,7 @@ fun ChatScreen(viewModel: ChatViewModel) {
     var passwordInput by remember { mutableStateOf("") }
     var showLocationChannelsSheet by remember { mutableStateOf(false) }
     var showLocationNotesSheet by remember { mutableStateOf(false) }
+    var showGroupsSheet by remember { mutableStateOf(false) }
     var showUserSheet by remember { mutableStateOf(false) }
     var selectedUserForSheet by remember { mutableStateOf("") }
     var selectedMessageForSheet by remember { mutableStateOf<BitchatMessage?>(null) }
@@ -462,7 +463,8 @@ fun ChatScreen(viewModel: ChatViewModel) {
             onLocationNotesClick = {
                 nearbyNotesController.reveal()
                 showLocationNotesSheet = true
-            }
+            },
+            onGroupsClick = { showGroupsSheet = true }
         )
 
         // Scroll-to-bottom floating button
@@ -556,6 +558,8 @@ fun ChatScreen(viewModel: ChatViewModel) {
         onSecurityVerificationSheetDismiss = viewModel::hideSecurityVerificationSheet,
         showMeshPeerListSheet = showMeshPeerListSheet,
         onMeshPeerListDismiss = viewModel::hideMeshPeerList,
+        showGroupsSheet = showGroupsSheet,
+        onGroupsSheetDismiss = { showGroupsSheet = false },
     )
 
     legacyPrivateMediaConsent?.let { request ->
@@ -652,7 +656,7 @@ fun ChatInputSection(
         com.bitchat.android.features.voice.LiveVoiceManager.getInstance(context).activePublicTalker
     }.collectAsState()
     Column(
-        // Flat, slightly translucent screen background — the same treatment as the top bar, so the
+        // Flat, slightly translucent screen background, the same treatment as the top bar, so the
         // two bars are visibly the same kind of surface. No gradient: a soft ramp here just looked
         // like a smudge above a crisp hairline. The rule is inside the background so the whole bar
         // is one surface with a top border, rather than a line floating over the conversation.
@@ -660,7 +664,7 @@ fun ChatInputSection(
             .fillMaxWidth()
             .background(colorScheme.background.copy(alpha = BarBackgroundAlpha))
     ) {
-        // Hairline marking where chrome begins. Faint on purpose — it is a hint, not a border.
+        // Hairline marking where chrome begins. Faint on purpose, it is a hint, not a border.
         HorizontalDivider(thickness = 1.dp, color = colorScheme.outlineVariant)
 
         // Command suggestions box
@@ -738,7 +742,7 @@ fun ChatInputSection(
  * Opacity shared by both bars.
  *
  * Slight, so the conversation scrolling underneath stays faintly perceptible and the chrome reads
- * as sitting over the content rather than boxing it in — without ever costing legibility.
+ * as sitting over the content rather than boxing it in, without ever costing legibility.
  */
 private const val BarBackgroundAlpha = 0.88f
 
@@ -761,7 +765,8 @@ private fun ChatFloatingHeader(
     onShowAppInfo: () -> Unit,
     onPanicClear: () -> Unit,
     onLocationChannelsClick: () -> Unit,
-    onLocationNotesClick: () -> Unit
+    onLocationNotesClick: () -> Unit,
+    onGroupsClick: () -> Unit
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val locationManager = remember { com.bitchat.android.geohash.LocationChannelManager.getInstance(context) }
@@ -806,7 +811,8 @@ private fun ChatFloatingHeader(
                 // Ensure location is loaded before showing sheet
                 locationManager.refreshChannels()
                 onLocationNotesClick()
-            }
+            },
+            onGroupsClick = onGroupsClick
         )
     }
 }
@@ -838,6 +844,8 @@ private fun ChatDialogs(
     onSecurityVerificationSheetDismiss: () -> Unit,
     showMeshPeerListSheet: Boolean,
     onMeshPeerListDismiss: () -> Unit,
+    showGroupsSheet: Boolean,
+    onGroupsSheetDismiss: () -> Unit,
 ) {
     val privateChatSheetPeer by viewModel.privateChatSheetPeer.collectAsStateWithLifecycle()
 
@@ -904,6 +912,15 @@ private fun ChatDialogs(
                 onMeshPeerListDismiss()
                 viewModel.showVerificationSheet(fromSidebar = true)
             }
+        )
+    }
+
+    // Groups sheet (creator-managed E2EE private groups; fork-only feature)
+    if (showGroupsSheet) {
+        GroupsSheet(
+            isPresented = showGroupsSheet,
+            onDismiss = onGroupsSheetDismiss,
+            viewModel = viewModel
         )
     }
 

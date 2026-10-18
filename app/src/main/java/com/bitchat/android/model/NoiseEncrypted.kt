@@ -26,7 +26,11 @@ enum class NoisePayloadType(val value: UByte) {
     VERIFY_RESPONSE(0x11u),     // Verification response
     FILE_TRANSFER(0x20u),
     /** Authenticated capabilities + Ed25519 binding for the current Noise generation. */
-    PEER_STATE(0x21u);
+    PEER_STATE(0x21u),
+    /** Creator-signed group state (add a member), see GroupStatePayload in the `groups` package. */
+    GROUP_INVITE(0x06u),
+    /** Creator-signed group state (rotated key after a roster change), same wire form as GROUP_INVITE. */
+    GROUP_KEY_UPDATE(0x07u);
 
 
     companion object {

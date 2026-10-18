@@ -140,6 +140,7 @@ class PacketProcessor(private val myPeerID: String) {
             MessageType.LEAVE -> handleLeave(routed)
             MessageType.FRAGMENT -> handleFragment(routed)
             MessageType.REQUEST_SYNC -> handleRequestSync(routed)
+            MessageType.GROUP_MESSAGE -> handleGroupMessage(routed) // public broadcast, no address check
             else -> {
                 // Handle private packet types (address check required)
                 if (packetRelayManager.isPacketAddressedToMe(packet)) {
@@ -228,6 +229,15 @@ class PacketProcessor(private val myPeerID: String) {
     private suspend fun handleRequestSync(routed: RoutedPacket) {
         delegate?.handleRequestSync(routed)
     }
+
+    /**
+     * Handle a GROUP_MESSAGE broadcast. Public/unaddressed like MessageType.MESSAGE;
+     * relay happens via the centralized PacketRelayManager below regardless of
+     * whether we can read it (non-members relay but never decrypt).
+     */
+    private suspend fun handleGroupMessage(routed: RoutedPacket) {
+        delegate?.handleGroupMessage(routed)
+    }
     
     /**
      * Handle delivery acknowledgment
@@ -301,6 +311,7 @@ interface PacketProcessorDelegate {
     fun handleLeave(routed: RoutedPacket)
     fun handleFragment(packet: BitchatPacket): BitchatPacket?
     fun handleRequestSync(routed: RoutedPacket)
+    fun handleGroupMessage(routed: RoutedPacket) {}
     
     // Communication
     fun sendAnnouncementToPeer(peerID: String)

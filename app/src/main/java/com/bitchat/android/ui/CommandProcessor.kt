@@ -23,6 +23,7 @@ class CommandProcessor(
         CommandSuggestion("/block", emptyList(), "[nickname]", "block or list blocked peers"),
         CommandSuggestion("/channels", emptyList(), null, "show all discovered channels"),
         CommandSuggestion("/clear", emptyList(), null, "clear chat messages"),
+        CommandSuggestion("/group", emptyList(), "<create|list|off|leave|invite|remove|name>", "manage E2EE private groups"),
         CommandSuggestion("/hug", emptyList(), "<nickname>", "send someone a warm hug"),
         CommandSuggestion("/j", listOf("/join"), "<channel>", "join or create a channel"),
         CommandSuggestion("/m", listOf("/msg"), "<nickname> [message]", "send private message"),
@@ -51,6 +52,7 @@ class CommandProcessor(
             "/hug" -> handleActionCommand(parts, "gives", "a warm hug 🫂", meshService, myPeerID, onSendMessage, viewModel)
             "/slap" -> handleActionCommand(parts, "slaps", "around a bit with a large trout 🐟", meshService, myPeerID, onSendMessage, viewModel)
             "/channels" -> handleChannelsCommand()
+            "/group" -> handleGroupCommand(parts, meshService)
             else -> handleUnknownCommand(cmd)
         }
         
@@ -134,6 +136,91 @@ class CommandProcessor(
         }
     }
     
+    /** Test/interim entry point for creator-managed E2EE private groups, no
+     * dedicated UI yet, so this is the only way to exercise the feature end
+     * to end. Mirrors bitchat-win's `/group` typing-mode design exactly:
+     * `/group create <name>` or `/group <name>` makes that group the active
+     * typing destination (like a channel or a private chat), so plain typed
+     * lines go straight there, see ChatViewModel.sendMessage's check of
+     * `state.getActiveGroupIdValue()`. `/group invite|remove <nickname>` act
+     * on whichever group is currently active, not a name you have to repeat
+     * every time. `/group off` exits typing mode without leaving the group;
+     * `/group leave` actually leaves it. Groups are identified by name
+     * (case-insensitive, first match) rather than their 16-byte binary ID
+     * for convenience; two same-named groups make the second unreachable. */
+    private fun handleGroupCommand(parts: List<String>, meshService: MeshService) {
+        fun say(content: String) {
+            messageManager.addMessage(BitchatMessage(sender = "system", content = content, timestamp = Date(), isRelay = false))
+        }
+
+        val sub = parts.getOrNull(1)?.lowercase()
+        when (sub) {
+            "create" -> {
+                val name = parts.drop(2).joinToString(" ").trim()
+                if (name.isEmpty()) { say("usage: /group create <name>"); return }
+                val group = meshService.createGroup(name)
+                if (group == null) {
+                    say("failed to create group '$name'")
+                } else {
+                    state.setActiveGroupId(group.groupId)
+                    say("created '${group.name}', typed lines now go here. /group invite <nickname> to add someone.")
+                }
+            }
+            "list" -> {
+                val groups = meshService.listGroups()
+                if (groups.isEmpty()) say("no groups")
+                else say(groups.joinToString("\n") { "${it.name}, ${it.members.size} member(s), epoch ${it.epoch}" })
+            }
+            "off" -> {
+                if (state.getActiveGroupIdValue() == null) {
+                    say("not currently typing into a group")
+                } else {
+                    state.setActiveGroupId(null)
+                    say("stopped typing into that group (still a member, /group <name> to come back)")
+                }
+            }
+            "leave" -> {
+                val groupId = state.getActiveGroupIdValue()
+                if (groupId == null) { say("usage: /group <name> first, then /group leave"); return }
+                val group = meshService.getGroup(groupId)
+                meshService.leaveGroup(groupId)
+                state.setActiveGroupId(null)
+                say("left '${group?.name ?: "group"}'")
+            }
+            "invite" -> {
+                val groupId = state.getActiveGroupIdValue()
+                if (groupId == null) { say("usage: /group <name> first, then /group invite <nickname>"); return }
+                val nickname = parts.getOrNull(2) ?: run { say("usage: /group invite <nickname>"); return }
+                val peerID = getPeerIDForNickname(nickname, meshService) ?: run { say("user '$nickname' not found"); return }
+                val reason = meshService.inviteToGroup(groupId, peerID)
+                say(reason ?: "invited $nickname")
+            }
+            "remove" -> {
+                val groupId = state.getActiveGroupIdValue()
+                if (groupId == null) { say("usage: /group <name> first, then /group remove <nickname>"); return }
+                val nickname = parts.getOrNull(2) ?: run { say("usage: /group remove <nickname>"); return }
+                val peerID = getPeerIDForNickname(nickname, meshService) ?: run { say("user '$nickname' not found"); return }
+                val reason = meshService.removeFromGroup(groupId, peerID)
+                say(reason ?: "removed $nickname")
+            }
+            null -> say("usage: /group <create|list|off|leave|invite|remove|name> ...")
+            else -> {
+                // Bare `/group <name>`, enter an existing group (name may contain spaces).
+                val name = parts.drop(1).joinToString(" ").trim()
+                val group = findGroupByName(name, meshService)
+                if (group == null) {
+                    say("no known group matching '$name', see /group list")
+                } else {
+                    state.setActiveGroupId(group.groupId)
+                    say("in '${group.name}', typed lines now go here until /group off.")
+                }
+            }
+        }
+    }
+
+    private fun findGroupByName(name: String, meshService: MeshService) =
+        meshService.listGroups().firstOrNull { it.name.equals(name, ignoreCase = true) }
+
     private fun handleWhoCommand(meshService: MeshService, viewModel: ChatViewModel? = null) {
         // Channel-aware who command (matches iOS behavior)
         val (peerList, contextDescription) = if (viewModel != null) {
@@ -375,7 +462,7 @@ class CommandProcessor(
     ) {
         val args = command.trim().split(Regex("\\s+")).drop(1)
         if (args.isEmpty()) {
-            addSystemMessage("usage: /pay <cashu token> [public] — Cashu tokens are bearer instruments")
+            addSystemMessage("usage: /pay <cashu token> [public], Cashu tokens are bearer instruments")
             return
         }
 
@@ -384,7 +471,7 @@ class CommandProcessor(
         val token = CashuTokenDecoder.bareToken(rawToken)
         val info = token?.let { CashuTokenDecoder.decode(it, strict = true) }
         if (token == null || info == null) {
-            addSystemMessage("invalid cashu token — not sending it")
+            addSystemMessage("invalid cashu token, not sending it")
             return
         }
 
@@ -426,7 +513,7 @@ class CommandProcessor(
         }
 
         addSystemMessage(
-            "sent ${info.displayAmount ?: "Cashu token"} — bearer token; first redeemer wins"
+            "sent ${info.displayAmount ?: "Cashu token"}, bearer token; first redeemer wins"
         )
     }
 
